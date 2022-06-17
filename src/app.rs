@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -112,7 +114,7 @@ impl eframe::App for TemplateApp {
 struct FrontEnd {
     ws_sender: WsSender,
     ws_receiver: WsReceiver,
-    events: Vec<WsEvent>,
+    events: VecDeque<WsEvent>,
     text_to_send: String,
 }
 
@@ -128,7 +130,11 @@ impl FrontEnd {
 
     fn ui(&mut self, ctx: &egui::Context) {
         while let Some(event) = self.ws_receiver.try_recv() {
-            self.events.push(event);
+            self.events.push_back(event);
+            if self.events.len() > 99 {
+                self.events.pop_front();
+            }
+            ctx.request_repaint()
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
