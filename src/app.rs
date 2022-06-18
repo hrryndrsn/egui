@@ -1,6 +1,7 @@
-use std::collections::VecDeque;
-
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
+use serde_json::{from_str, to_string, Value};
+use std::collections::VecDeque;
+extern crate jsonpath_lib as jsonpath;
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
@@ -24,7 +25,7 @@ impl Default for TemplateApp {
             label: "Hello World!".to_owned(),
             value: 2.7,
             error: "".to_string(),
-            url: "".to_string(),
+            url: "wss://ws-feed.exchange.coinbase.com".to_string(),
             frontend: None,
         }
     }
@@ -43,7 +44,9 @@ impl TemplateApp {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         }
 
-        Default::default()
+        let mut s = TemplateApp::default();
+        s.connect(cc.egui_ctx.clone());
+        s
     }
     fn connect(&mut self, ctx: egui::Context) {
         let wakeup = move || ctx.request_repaint(); // wake up UI thread on new message
@@ -73,17 +76,6 @@ impl eframe::App for TemplateApp {
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
-        if !frame.is_web() {
-            egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-                egui::menu::bar(ui, |ui| {
-                    ui.menu_button("File", |ui| {
-                        if ui.button("Quit").clicked() {
-                            frame.quit();
-                        }
-                    });
-                });
-            });
-        }
 
         egui::TopBottomPanel::top("server").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -116,6 +108,7 @@ struct FrontEnd {
     ws_receiver: WsReceiver,
     events: VecDeque<WsEvent>,
     text_to_send: String,
+    json_path_filter: String,
 }
 
 impl FrontEnd {
@@ -124,7 +117,8 @@ impl FrontEnd {
             ws_sender,
             ws_receiver,
             events: Default::default(),
-            text_to_send: Default::default(),
+            text_to_send: "{\"type\": \"subscribe\",\"product_ids\": [\"BTC-USD\"],\"channels\": [\"level2\"]}".to_string(),
+            json_path_filter: String::from("$"),
         }
     }
 
@@ -146,12 +140,47 @@ impl FrontEnd {
                     self.ws_sender
                         .send(WsMessage::Text(std::mem::take(&mut self.text_to_send)));
                 }
+
+                ui.label("filter:");
+                if ui
+                    .text_edit_singleline(&mut self.json_path_filter)
+                    .lost_focus()
+                    && ui.input().key_pressed(egui::Key::Enter)
+                {
+                    self.json_path_filter = std::mem::take(&mut self.json_path_filter);
+                }
             });
 
             ui.separator();
             ui.heading("Received events:");
             for event in &self.events {
-                ui.label(format!("{:?}", event));
+                if let WsEvent::Message(msg) = event {
+                    if let WsMessage::Text(txt) = msg {
+                        let json = from_str::<Value>(&txt).unwrap();
+                        let mut selector = jsonpath::selector(&json);
+                        // let path = "$.path";
+                        let result = match selector(&self.json_path_filter) {
+                            Ok(value) => {
+                                let joined = value
+                                    .into_iter()
+                                    .map(|v| match to_string(&v) {
+                                        Ok(str) => str,
+                                        Err(err) => err.to_string(),
+                                    })
+                                    .collect::<Vec<String>>();
+                                joined.join(" ,")
+                            }
+
+                            Err(err) => err.to_string(),
+                        };
+                        //
+                        ui.label(format!("{}", result));
+                    } else {
+                        ui.label(format!("non_text {:?}", msg));
+                    }
+                } else {
+                    ui.label(format!("non_msg {:?}", event));
+                }
             }
         });
     }
